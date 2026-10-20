@@ -1,1 +1,40 @@
-# detection_reid_race_car
+# Racing Car Detection, Tracking and Re-Identification
+
+# Descrizione del progetto
+Il progetto riguarda lo sviluppo di un sistema di computer vision per il rilevamento, il tracciamento e la re-identificazione di auto da corsa nei video, anche in presenza di cambi di inquadratura e di visuali provenienti da telecamere diverse. Il sistema combina tecniche di object detection, multi-object tracking e re-identificazione basata sull'aspetto visivo dei veicoli, con l'obiettivo di individuare le tracce che corrispondono a un veicolo target selezionato.
+
+# Tecnologie utilizzate
+1. YOLO-World — rilevamento degli oggetti
+2. ByteTrack — tracciamento di più veicoli
+3. OpenVINO — esecuzione del modello di re-identificazione vehicle-reid-0001
+4. vehicle-reid-0001 - estrazione delle caratteristiche visive
+5. TransNetV2 — rilevamento dei cambi di inquadratura (shot boundary detection)
+
+# Pipeline del sistema
+1. pre-elaborazione del video: per ogni frame, la rete YOLO-World configurata con classi specifiche come ["formula one racing car", "f1 car", "go-kart", "racing car"] genera i rettangoli di rilevamento. Tramite il metodo tracker.update(), l'algoritmo di data-association basato su ByteTrack confronta i rilevamenti correnti con la memoria storica delle tracce precedenti, sfruttando il filtro di Kalman e l'intersezione delle aree (IoU). Questo modulo collega i rilevamenti che appartengono potenzialmente alla stessa traccia, assegnando degli ID a ogni traccia. Sfruttando le coordinate del box [x1, y1, x2, y2], il sistema esegue un'operazione di cropping. L'immagine crop_img viene inviata alla funzione extract_reid_embedding() per estrarre un descrittore vettoriale (embedding) normalizzato di 512 elementi. Tutti gli embedding estratti per lo stesso track_id lungo i vari frame vengono accumulati nel dizionario globale all_tracks_features. 
+2. rilevamento dei cambi di inquadratura: al fine di permettere al sistema di re-identificare il veicolo target in ogni inquadratura in cui è apparso, viene utilizzato il modello TransNetV2 per ottenere il punteggio di confidenza di tutti i frame del video, e successivamente vengono selezionati i frame con un punteggio di confidenza superiore a 0.5 e salvati in una lista globale transnet_shot_frames; tali frame rappresentano il primo frame di ciascuna inquadratura. In seguito, tutti gli intervalli temporali delle inquadrature vengono salvati in un dizionario globale chiamato SHOT_TIMELINES, in modo da poter selezionare successivamente, all’interno di ciascuna inquadratura, la traccia più simile alla vettura target.
+3. modellazione della gallery: il sistema legge le immagini ritagliate manualmente del veicolo target ed estrae l’embedding di ciascuna e applica l’algoritmo K-Means per estrarre molteplici centroidi dagli embedding tramite la funzione extract_centroids_via_kmeans().
+4. selezione delle tracce di veicolo target: all'interno della funzione find_traget_track_ids(), il sistema itera su ogni singola inquadratura registica. Per ogni inquadratura, si selezionano le tracce attive active_track_ids, cioè tutte le tracce che compaiono all’interno di quella inquadratura. Per ogni traccia attiva nella inquadratura, il sistema estrae i suoi centroidi e calcola la similarità coseno eseguendo un prodotto scalare incrociato tra tutti i suoi centroidi e quelli del target, estraendo il punteggio massimo best_score. Successivamente, viene applicato il principio di esclusività competitiva: all'interno di una singola inquadratura, la traccia con il punteggio massimo in assoluto viene selezionata come candidato ideale. Se la sua similarità supera la soglia minima impostata min_sim, il suo ID viene promosso a vero target e aggiunto a matched_target_ids.
+5. endering video: viene inizializzato un modulo cv2.VideoWriter. Il sistema rilegge il video originale, se l'ID corrente della traccia appartiene alla lista target_track_ids, viene disegnato un bounding box di colore rosso con la dicitura "TARGET VEHICLE". In caso contrario, l'auto viene contrassegnata con un box sottile di colore verde.
+
+# Implementazione e sperimentazione
+Le variabili che potrebbero influenzare le prestazioni di re-identificazione del sistema:
+1. numero di centroidi (num_centroid}): quando il numero di centroidi è pari a 1, l’unico centroide coincide con il mean embedding; quando 2 <= num_centroids <= 5, viene utilizzato l’algoritmo K-Means per ottenere il numero predefinito di centroidi; 
+2. numero di immagini di veicolo target (num_target_images): può assumere il valore di 15 e 30; 
+3. soglia di accettazione della similarità tra centroidi (min_sim): se il valore di similarità di una traccia supera questa soglia, il sistema considera tale traccia come appartenente alla vettura target. In questo esperimento, la soglia è stata impostata rispettivamente a 0.6, 0.7 e 0.8.
+Prima di iniziare gli esperimenti, è necessario preparare sia la gallery sia i video utilizzati per la valutazione. Sono stati scaricati da YouTube 6 video di gare di Formula 1 della durata di circa 8 minuti ciascuno. Ognuno viene accorciato fino a una durata di circa un minuto mediante lo strumento di editing video Microsoft Clipchamp per semplicità. Successivamente, da questi video ridotti sono stati estratti tramite lo strumento di cattura schermo integrato in Windows diversi screenshot contenenti la vettura target e, per ciascun video, è stato selezionato un numero di immagini corrispondente al numero di immagini del veicolo target impostato per costruire la gallery. Per garantire che il target potesse essere re-identificato in ogni shot in cui compare, la selezione delle immagini della gallery è stata effettuata in modo da includere almeno uno screenshot del target per ciascuno shot in cui esso appare. 
+I risultati ottenuti dalle 30 diverse combinazioni di parametri sui 6 video sperimentali, utilizzando le seguenti metriche:
+1. numero di re-identificazioni corrette (# reid corrette): numero di shot reale in cui il veicolo target compare e viene re-identificato almeno una volta, ossia il numero di veri positivi; 
+2. numero di re-identificazioni errate (# reid errate): numero di shot reale in cui almeno una vettura che non corrisponde al veicolo target viene erroneamente re-identificata, ossia il numero di falsi positivi; 
+3. numero di mancate re-identificazioni (# mancate reid): numero di shot reale in cui il veicolo target compare ma nessuna vettura da corsa viene re-identificata come veicolo target, ossia il numero di falsi negativi.
+
+# Conclusione
+Il numero di centroids, il valore di min_sim e il numero di immagini del veicolo target influenzano tutte le prestazioni della re-identificazione.
+
+# Evoluzione
+Sulla base dei risultati sperimentali,si propongono le seguenti possibili ottimizzazioni:
+1. Per evitare che, nel caso di tracce che attraversano più inquadrature, il bounding box venga renderizzato in rosso per l'intera durata della traccia una volta che essa è stata re-identificata come veicolo target, è possibile associare a ciascuna traccia corrispondente al veicolo target anche l'intervallo di frame in cui la re-identificazione è effettivamente avvenuta. In questo modo, il bounding box verrebbe evidenziato soltanto nei frame corrispondenti, evitando evidenziazioni errate in altre parti del video;
+2. Rimuovere preventivamente dal video tutte le sequenze di transizione verso il replay che mostrano esclusivamente il logo della Formula 1 e non contengono alcuna vettura da corsa, così da evitare che influenzino negativamente la capacità di TransNetV2 di individuare correttamente i punti di cambio di inquadratura.
+
+# Limitazione
+La prima ottimazione può risolvere solo il problema per cui due tracce, corrispondenti a due auto da corsa differenti, vengono renderizzate contemporaneamente in rosso nello stesso shot. Tuttavia, non è in grado di risolvere il problema per cui, all'interno dello stesso shot, due tracce differenti vengono renderizzate in rosso in successione. D'altra parte, permette di dedurre con maggiore precisione in quale intervallo temporale le tracce siano state re-identificate correttamente o erroneamente come veicolo target.
